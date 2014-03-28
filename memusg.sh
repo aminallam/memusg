@@ -33,16 +33,18 @@
 #   1) Time interval (in seconds) between consecutive checks
 #   2) Minimum memory (in MBs) size to track (avoid tracking any process whose memory peak does not exceed this value)
 #   3) Flag to empty the ./memusg folder before starting ("clean" or "noclean")
-#   4) User name whose owned processes need to be tracked
+#   4) User name whose owned processes need to be tracked (or "all" if you need to track all users)
+#   5) The name of the tracked process (or "all" if you need to track all processes)
 # The script is tested on both linux and mac
-# Example usage: bash ./memusg.sh 30 30 clean aminallam
+# Example usage (track all processes with > 20 MBs peak memory of user "aminallam" every 10 seconds):
+#    bash ./memusg.sh 10 20 clean aminallam all
 
 
 MEMUSGDIR="./memusg"
 
-if [ $3 == clean ]
+if [ "$3" == "clean" ]
 then
-	rm -R $MEMUSGDIR 2>/dev/null
+	rm -R "${MEMUSGDIR}" 2>/dev/null
 	echo cleaned
 fi
 
@@ -53,46 +55,61 @@ do
 
 echo -n .
 
+stline=0
+
 IFS=$'\r\n'
-all_lines=($(ps xco pid,lstart,rss,command -ww -U $4))
+if [ -n "$5" -a "$5" != all ]; then
+	if [ -n "$4" -a "$4" != all ]; then
+		all_lines=($(ps xco pid,lstart,rss,command -ww -U "$4" | grep "$5"))
+	else
+		all_lines=($(ps xco pid,lstart,rss,command -ww | grep "$5"))
+	fi
+else
+	stline=1
+	if [ -n "$4" -a "$4" != all ]; then
+		all_lines=($(ps xco pid,lstart,rss,command -ww -U "$4"))
+	else
+		all_lines=($(ps xco pid,lstart,rss,command -ww))
+	fi
+fi
+
 
 unset IFS
 for i in "${!all_lines[@]}"
 do
-	if [ $i -gt 0 ]
+if [ $i -ge ${stline} ]; then
+	read -a cur_values <<<"${all_lines[$i]}"
+	if [ "${cur_values[4]}" != "ps" -a "${cur_values[4]}" != "bash" ]
 	then
-		read -a cur_values <<<"${all_lines[$i]}"
-		if [ ${cur_values[4]} != "ps" -a ${cur_values[4]} != "bash" ]
+		process_id="${cur_values[0]//[^a-zA-Z0-9]/-}"
+		process_start="${cur_values[2]//[^a-zA-Z0-9]/-}-${cur_values[3]//[^a-zA-Z0-9]/-}-${cur_values[4]//[^a-zA-Z0-9]/-}"
+		cur_mem_usage="${cur_values[6]}"
+		process_name="${cur_values[7]//[^a-zA-Z0-9]/-}"
+		num_cur_vals="${#cur_values[@]}"
+		j=8
+		while [ $j -lt "${num_cur_vals}" ]
+		do
+			process_name="${process_name}-${cur_values[$j]//[^a-zA-Z0-9]/-}"
+			j=$(( $j + 1 ))
+		done
+		file_name="${process_name}_${process_id}_${process_start}.txt"
+		cur_mem_usage=$(( ${cur_mem_usage} / 1024 ))
+		max_mem_usage="$2"
+		if [ ${cur_mem_usage} -gt ${max_mem_usage} ]
 		then
-			process_id="${cur_values[0]//[^a-zA-Z0-9]/-}"
-			process_start="${cur_values[2]//[^a-zA-Z0-9]/-}-${cur_values[3]//[^a-zA-Z0-9]/-}-${cur_values[4]//[^a-zA-Z0-9]/-}"
-			cur_mem_usage="${cur_values[6]}"
-			process_name="${cur_values[7]//[^a-zA-Z0-9]/-}"
-			num_cur_vals="${#cur_values[@]}"
-			j=8
-			while [ $j -lt $num_cur_vals ]
-			do
-				process_name=${process_name}-"${cur_values[$j]//[^a-zA-Z0-9]/-}"
-				j=$(( $j + 1 ))
-			done
-			file_name="${process_name}_${process_id}_${process_start}.txt"
-			cur_mem_usage=$(( $cur_mem_usage / 1024 ))
-			max_mem_usage=$2
-			if [ $cur_mem_usage -gt $max_mem_usage ]
+			file_path="${MEMUSGDIR}/${file_name}"
+			if [ -f "${file_path}" ]
 			then
-				file_path=$MEMUSGDIR/${file_name}
-				if [ -f $file_path ]
-				then
-					max_mem_usage=$(head -1 $file_path)
-				fi
-				if [ $cur_mem_usage -gt $max_mem_usage ]
-				then
-					echo "$cur_mem_usage" > $file_path
-					echo "$(ps o ppid,command -ww -p ${process_id} | sed 1d)" >> $file_path
-				fi
+				max_mem_usage=$(head -1 "${file_path}")
+			fi
+			if [ ${cur_mem_usage} -gt ${max_mem_usage} ]
+			then
+				echo "$cur_mem_usage" > "${file_path}"
+				echo "$(ps o ppid,command -ww -p ${process_id} | sed 1d)" >> "${file_path}"
 			fi
 		fi
 	fi
+fi
 done
 
 sleep $1
